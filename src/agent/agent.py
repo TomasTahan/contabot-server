@@ -273,7 +273,7 @@ class ExpenseAgent:
                 "mcp__expenses__get_recent_expenses",
                 "mcp__expenses__get_expense_summary",
             ],
-            "permission_mode": "bypassPermissions",
+            "permission_mode": "acceptEdits",
         }
 
         # User sessions: telegram_user_id -> UserSession
