@@ -138,6 +138,7 @@ class PocketBaseService:
             "property": expense.property,
             "payment_method": expense.payment_method,
             "telegram_user": expense.telegram_user,
+            "registered_by": expense.registered_by,
             "notes": expense.notes,
             "reconciled": False,
         }
@@ -232,6 +233,82 @@ class PocketBaseService:
             "by_category": dict(sorted(summary.items(), key=lambda x: x[1], reverse=True)),
             "count": len(expenses),
         }
+
+    # Debts
+    async def create_debt(self, debt_data: dict) -> dict:
+        """Create a new debt record"""
+        await self._ensure_authenticated()
+        record = self.client.collection("debts").create(debt_data)
+        return record.__dict__
+
+    async def get_pending_debts(self, debt_type: str = "all") -> list[dict]:
+        """Get pending debts filtered by type"""
+        await self._ensure_authenticated()
+
+        filters = ['status != "paid"']
+        if debt_type == "receivable":
+            filters.append('type = "receivable"')
+        elif debt_type == "payable":
+            filters.append('type = "payable"')
+
+        filter_str = " && ".join(filters)
+
+        records = self.client.collection("debts").get_list(
+            1, 100, {"filter": filter_str, "sort": "-created"}
+        )
+
+        return [r.__dict__ for r in records.items]
+
+    async def mark_debt_paid(
+        self, person: str, amount: Optional[float] = None, debt_type: Optional[str] = None
+    ) -> Optional[dict]:
+        """Mark a debt as paid (fully or partially)"""
+        await self._ensure_authenticated()
+
+        # Find the debt
+        filters = [f'person ~ "{person}"', 'status != "paid"']
+        if debt_type:
+            filters.append(f'type = "{debt_type}"')
+
+        filter_str = " && ".join(filters)
+
+        records = self.client.collection("debts").get_list(
+            1, 1, {"filter": filter_str}
+        )
+
+        if not records.items:
+            return None
+
+        debt = records.items[0]
+        current_paid = debt.paid_amount or 0
+
+        if amount is None:
+            # Mark as fully paid
+            new_paid = debt.amount
+            new_status = "paid"
+        else:
+            new_paid = current_paid + amount
+            if new_paid >= debt.amount:
+                new_paid = debt.amount
+                new_status = "paid"
+            else:
+                new_status = "partial"
+
+        updated = self.client.collection("debts").update(
+            debt.id,
+            {"paid_amount": new_paid, "status": new_status}
+        )
+
+        return updated.__dict__
+
+    async def get_debt_by_id(self, debt_id: str) -> Optional[dict]:
+        """Get a debt by ID"""
+        await self._ensure_authenticated()
+        try:
+            record = self.client.collection("debts").get_one(debt_id)
+            return record.__dict__
+        except ClientResponseError:
+            return None
 
 
 # Singleton instance

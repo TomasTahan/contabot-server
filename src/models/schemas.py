@@ -34,6 +34,7 @@ class Expense(BaseModel):
     property: Optional[str] = None
     payment_method: str  # card, transfer, cash
     telegram_user: Optional[str] = None
+    registered_by: Optional[str] = None
     attachment: Optional[str] = None
     notes: Optional[str] = None
     reconciled: bool = False
@@ -47,6 +48,7 @@ class ExpenseCreate(BaseModel):
     property: Optional[str] = None
     payment_method: str = "card"
     telegram_user: Optional[str] = None
+    registered_by: Optional[str] = None
     notes: Optional[str] = None
 
 

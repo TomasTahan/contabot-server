@@ -95,6 +95,11 @@ async def telegram_webhook(request: Request):
         user_id = str(message.from_user.id) if message.from_user else "unknown"
         chat_id = message.from_user.id if message.from_user else None
 
+        # Get display name for the user (username or first_name)
+        user_display_name = None
+        if message.from_user:
+            user_display_name = message.from_user.username or message.from_user.first_name
+
         if not chat_id:
             return {"ok": True}
 
@@ -163,6 +168,7 @@ async def telegram_webhook(request: Request):
             response = await agent.process_message(
                 text=text_content,
                 telegram_user_id=user_id,
+                telegram_username=user_display_name,
                 image_base64=image_base64,
             )
 
