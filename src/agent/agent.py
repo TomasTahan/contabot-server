@@ -159,6 +159,74 @@ async def get_properties(args: dict[str, Any]) -> dict[str, Any]:
 
 
 @tool(
+    name="create_category",
+    description="""Crea una nueva categoría o subcategoría.
+
+Parámetros:
+- name (requerido): Nombre de la categoría
+- parent_id: ID de la categoría padre (si es subcategoría). Usa get_categories para ver las existentes.
+- keywords: Lista de palabras clave para auto-categorización (ej: ["farmacia", "remedios"])
+- property_id: ID de la propiedad si la categoría es específica de una propiedad""",
+    input_schema={
+        "name": str,
+        "parent_id": str,
+        "keywords": list,
+        "property_id": str,
+    }
+)
+async def create_category(args: dict[str, Any]) -> dict[str, Any]:
+    """Create a new category or subcategory."""
+    pb = get_pocketbase_service()
+
+    name = args["name"]
+    parent_id = args.get("parent_id")
+    keywords = args.get("keywords", [])
+    property_id = args.get("property_id")
+
+    # Validate parent exists if provided
+    parent_name = None
+    if parent_id:
+        parent = await pb.get_category_by_id(parent_id)
+        if not parent:
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": f"Error: No existe una categoría con ID '{parent_id}'. Usa get_categories para ver las categorías disponibles."
+                }]
+            }
+        parent_name = parent.name
+
+    created = await pb.create_category(
+        name=name,
+        parent_id=parent_id,
+        keywords=keywords,
+        property_id=property_id,
+    )
+
+    # Build response
+    if parent_name:
+        full_name = f"{parent_name} > {name}"
+        category_type = "Subcategoría"
+    else:
+        full_name = name
+        category_type = "Categoría"
+
+    response = f"""✓ {category_type} creada:
+- Nombre: {full_name}
+- ID: {created.id}"""
+
+    if keywords:
+        response += f"\n- Keywords: {', '.join(keywords)}"
+
+    return {
+        "content": [{
+            "type": "text",
+            "text": response
+        }]
+    }
+
+
+@tool(
     name="get_recent_expenses",
     description="Obtiene los gastos recientes. Usa esto cuando el usuario pregunte qué ha gastado últimamente.",
     input_schema={
@@ -413,6 +481,7 @@ expense_mcp_server = create_sdk_mcp_server(
         register_expense,
         get_categories,
         get_properties,
+        create_category,
         get_recent_expenses,
         get_expense_summary,
         register_debt,
@@ -435,6 +504,7 @@ class ExpenseAgent:
                 "mcp__expenses__register_expense",
                 "mcp__expenses__get_categories",
                 "mcp__expenses__get_properties",
+                "mcp__expenses__create_category",
                 "mcp__expenses__get_recent_expenses",
                 "mcp__expenses__get_expense_summary",
                 "mcp__expenses__register_debt",

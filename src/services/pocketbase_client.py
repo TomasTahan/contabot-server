@@ -122,6 +122,29 @@ class PocketBaseService:
 
         return result
 
+    async def create_category(
+        self,
+        name: str,
+        parent_id: Optional[str] = None,
+        keywords: Optional[list[str]] = None,
+        property_id: Optional[str] = None,
+    ) -> Category:
+        """Create a new category or subcategory"""
+        data = {
+            "name": name,
+        }
+        if parent_id:
+            data["parent"] = parent_id
+        if keywords:
+            data["keywords"] = keywords
+        if property_id:
+            data["property"] = property_id
+
+        record = await self._execute_with_retry(
+            self.client.collection("categories").create, data
+        )
+        return Category(**record.__dict__)
+
     # Telegram Users
     async def get_telegram_user(self, telegram_id: str) -> Optional[TelegramUser]:
         await self._ensure_authenticated()
