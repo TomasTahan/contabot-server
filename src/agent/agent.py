@@ -47,6 +47,7 @@ Parámetros:
 - category_id: ID de la categoría (usa get_categories para obtenerlo)
 - property_id: ID de la propiedad si aplica
 - payment_method: 'card', 'transfer', o 'cash'. Por defecto 'card'
+- date: Fecha del gasto en formato ISO (YYYY-MM-DD). Si no se especifica, usa la fecha actual.
 - notes: Notas adicionales""",
     input_schema={
         "amount": float,
@@ -55,6 +56,7 @@ Parámetros:
         "category_id": str,
         "property_id": str,
         "payment_method": str,
+        "date": str,
         "notes": str,
     }
 )
@@ -62,10 +64,18 @@ async def register_expense(args: dict[str, Any]) -> dict[str, Any]:
     """Register a new expense."""
     pb = get_pocketbase_service()
 
+    # Parse date if provided, otherwise use now
+    expense_date = datetime.now()
+    if args.get("date"):
+        try:
+            expense_date = datetime.fromisoformat(args["date"])
+        except ValueError:
+            pass  # Keep default if parsing fails
+
     expense = ExpenseCreate(
         amount=args["amount"],
         description=args["description"],
-        date=datetime.now(),
+        date=expense_date,
         category=args.get("category_id"),
         property=args.get("property_id"),
         payment_method=args.get("payment_method", "card"),
@@ -90,6 +100,7 @@ async def register_expense(args: dict[str, Any]) -> dict[str, Any]:
             property_name = prop.name
 
     registered_by = args.get("registered_by", "")
+    date_str = created.date.strftime("%d/%m/%Y") if created.date else "Hoy"
 
     return {
         "content": [{
@@ -98,10 +109,124 @@ async def register_expense(args: dict[str, Any]) -> dict[str, Any]:
 - ID: {created.id}
 - Monto: ${created.amount:,.0f}
 - Descripción: {created.description}
+- Fecha: {date_str}
 - Categoría: {category_name or 'Sin categoría'}
 - Propiedad: {property_name or 'General'}
 - Método de pago: {created.payment_method}
 - Registrado por: {registered_by}"""
+        }]
+    }
+
+
+@tool(
+    name="update_expense",
+    description="""Actualiza un gasto existente. Usa esto cuando el usuario quiera corregir o modificar un gasto ya registrado.
+
+Parámetros:
+- expense_id: ID del gasto a modificar. Usa 'last' para el último gasto del usuario.
+- registered_by: Username del usuario (para buscar su último gasto si expense_id='last')
+- amount: Nuevo monto (opcional)
+- description: Nueva descripción (opcional)
+- category_id: Nueva categoría (opcional)
+- property_id: Nueva propiedad (opcional)
+- payment_method: Nuevo método de pago - 'card', 'transfer', o 'cash' (opcional)
+- date: Nueva fecha en formato ISO YYYY-MM-DD (opcional)
+- notes: Nuevas notas (opcional)""",
+    input_schema={
+        "expense_id": str,
+        "registered_by": str,
+        "amount": float,
+        "description": str,
+        "category_id": str,
+        "property_id": str,
+        "payment_method": str,
+        "date": str,
+        "notes": str,
+    }
+)
+async def update_expense(args: dict[str, Any]) -> dict[str, Any]:
+    """Update an existing expense."""
+    pb = get_pocketbase_service()
+
+    expense_id = args.get("expense_id")
+    registered_by = args.get("registered_by")
+
+    # If expense_id is 'last', get the last expense for this user
+    if expense_id == "last":
+        last_expense = await pb.get_last_expense(registered_by=registered_by)
+        if not last_expense:
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": "No encontré gastos recientes tuyos para modificar."
+                }]
+            }
+        expense_id = last_expense.id
+
+    # Build update data
+    update_data = {}
+
+    if args.get("amount"):
+        update_data["amount"] = args["amount"]
+    if args.get("description"):
+        update_data["description"] = args["description"]
+    if args.get("category_id"):
+        update_data["category"] = args["category_id"]
+    if args.get("property_id"):
+        update_data["property"] = args["property_id"]
+    if args.get("payment_method"):
+        update_data["payment_method"] = args["payment_method"]
+    if args.get("date"):
+        try:
+            update_data["date"] = datetime.fromisoformat(args["date"]).isoformat()
+        except ValueError:
+            pass
+    if args.get("notes"):
+        update_data["notes"] = args["notes"]
+
+    if not update_data:
+        return {
+            "content": [{
+                "type": "text",
+                "text": "No especificaste qué cambiar. Indica qué campo quieres modificar."
+            }]
+        }
+
+    updated = await pb.update_expense(expense_id, update_data)
+
+    # Get names for response
+    category_name = None
+    property_name = None
+
+    if updated.category:
+        cat = await pb.get_category_by_id(updated.category)
+        if cat:
+            category_name = cat.name
+
+    if updated.property:
+        prop = await pb.get_property_by_id(updated.property)
+        if prop:
+            property_name = prop.name
+
+    # Build response showing what changed
+    changes = []
+    if args.get("amount"):
+        changes.append(f"Monto: ${updated.amount:,.0f}")
+    if args.get("payment_method"):
+        changes.append(f"Método: {updated.payment_method}")
+    if args.get("category_id"):
+        changes.append(f"Categoría: {category_name}")
+    if args.get("property_id"):
+        changes.append(f"Propiedad: {property_name}")
+    if args.get("date"):
+        changes.append(f"Fecha: {updated.date.strftime('%d/%m/%Y')}")
+    if args.get("description"):
+        changes.append(f"Descripción: {updated.description}")
+
+    return {
+        "content": [{
+            "type": "text",
+            "text": f"✓ Gasto actualizado:\n" + "\n".join(f"- {c}" for c in changes)
         }]
     }
 
@@ -479,6 +604,7 @@ expense_mcp_server = create_sdk_mcp_server(
     version="1.0.0",
     tools=[
         register_expense,
+        update_expense,
         get_categories,
         get_properties,
         create_category,
@@ -502,6 +628,7 @@ class ExpenseAgent:
             "mcp_servers": {"expenses": expense_mcp_server},
             "allowed_tools": [
                 "mcp__expenses__register_expense",
+                "mcp__expenses__update_expense",
                 "mcp__expenses__get_categories",
                 "mcp__expenses__get_properties",
                 "mcp__expenses__create_category",
@@ -568,13 +695,24 @@ class ExpenseAgent:
         telegram_user_id: str,
         telegram_username: Optional[str] = None,
         image_base64: Optional[str] = None,
+        referenced_expense_id: Optional[str] = None,
     ) -> str:
         """
         Process a message from a Telegram user.
         Sessions persist for the entire day and resume automatically.
         """
-        # Build the prompt with user context
-        user_context = f"[Usuario: {telegram_username or telegram_user_id}]\n\n"
+        # Build the prompt with user context and current date
+        today = datetime.now()
+        date_context = today.strftime("%Y-%m-%d")
+        weekday_names = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+        weekday = weekday_names[today.weekday()]
+
+        user_context = f"[Usuario: {telegram_username or telegram_user_id}] [Fecha actual: {date_context} ({weekday})]"
+
+        if referenced_expense_id:
+            user_context += f" [Gasto referenciado: {referenced_expense_id}]"
+
+        user_context += "\n\n"
 
         if image_base64:
             prompt_text = f"""{user_context}[El usuario envió una imagen de una boleta junto con este mensaje]

@@ -3,6 +3,7 @@ Telegram webhook handlers.
 """
 import logging
 import os
+import re
 import base64
 from typing import Optional
 
@@ -42,6 +43,12 @@ class TelegramVoice(BaseModel):
     file_size: Optional[int] = None
 
 
+class TelegramReplyMessage(BaseModel):
+    """Simplified model for reply_to_message (we only need the message_id)"""
+    message_id: int
+    text: Optional[str] = None
+
+
 class TelegramMessage(BaseModel):
     message_id: int
     from_user: Optional[TelegramUser] = Field(default=None, alias="from")
@@ -50,6 +57,7 @@ class TelegramMessage(BaseModel):
     photo: Optional[list[TelegramPhoto]] = None
     voice: Optional[TelegramVoice] = None
     caption: Optional[str] = None
+    reply_to_message: Optional[TelegramReplyMessage] = None
 
     model_config = {"populate_by_name": True}
 
@@ -163,6 +171,17 @@ async def telegram_webhook(request: Request):
         if not text_content and not image_base64:
             return {"ok": True}
 
+        # Check if this is a reply to a message with an expense
+        referenced_expense_id = None
+        if message.reply_to_message:
+            expense = await pb.get_expense_by_message_id(
+                telegram_message_id=message.reply_to_message.message_id,
+                chat_id=chat_id,
+            )
+            if expense:
+                referenced_expense_id = expense.id
+                logger.info(f"Found referenced expense: {referenced_expense_id}")
+
         # Process with agent
         try:
             response = await agent.process_message(
@@ -170,14 +189,28 @@ async def telegram_webhook(request: Request):
                 telegram_user_id=user_id,
                 telegram_username=user_display_name,
                 image_base64=image_base64,
+                referenced_expense_id=referenced_expense_id,
             )
 
             # Send response
-            await telegram.send_message(
+            sent_message = await telegram.send_message(
                 chat_id=chat_id,
                 text=response,
                 reply_to_message_id=message.message_id,
             )
+
+            # If a new expense was registered, save the link
+            # Parse expense ID from response (format: "- ID: xxxxx")
+            if sent_message and "Gasto registrado exitosamente" in response:
+                id_match = re.search(r"- ID: (\w+)", response)
+                if id_match:
+                    expense_id = id_match.group(1)
+                    await pb.save_message_expense_link(
+                        telegram_message_id=sent_message.get("message_id"),
+                        chat_id=chat_id,
+                        expense_id=expense_id,
+                    )
+                    logger.info(f"Saved message-expense link: {sent_message.get('message_id')} -> {expense_id}")
 
         except Exception as e:
             logger.error(f"Error processing message with agent: {e}")

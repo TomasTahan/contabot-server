@@ -256,6 +256,30 @@ class PocketBaseService:
         start_date = datetime.now() - timedelta(days=days)
         return await self.get_expenses(start_date=start_date, limit=limit)
 
+    async def get_last_expense(self, registered_by: Optional[str] = None) -> Optional[Expense]:
+        """Get the most recent expense, optionally filtered by who registered it"""
+        await self._ensure_authenticated()
+
+        filter_str = f'registered_by = "{registered_by}"' if registered_by else ""
+
+        records = self.client.collection("expenses").get_list(
+            1, 1, {"filter": filter_str, "sort": "-created"} if filter_str else {"sort": "-created"}
+        )
+
+        if records.items:
+            return Expense(**records.items[0].__dict__)
+        return None
+
+    async def update_expense(self, expense_id: str, data: dict) -> Expense:
+        """Update an existing expense"""
+        # Remove None values
+        data = {k: v for k, v in data.items() if v is not None}
+
+        record = await self._execute_with_retry(
+            self.client.collection("expenses").update, expense_id, data
+        )
+        return Expense(**record.__dict__)
+
     async def upload_attachment(self, expense_id: str, file_path: str) -> str:
         """Upload an attachment to an existing expense"""
         await self._ensure_authenticated()
@@ -375,6 +399,46 @@ class PocketBaseService:
         try:
             record = self.client.collection("debts").get_one(debt_id)
             return record.__dict__
+        except ClientResponseError:
+            return None
+
+    # Message-Expense Links
+    async def save_message_expense_link(
+        self, telegram_message_id: int, chat_id: int, expense_id: str
+    ) -> None:
+        """Save a link between a Telegram message and an expense"""
+        data = {
+            "telegram_message_id": telegram_message_id,
+            "chat_id": chat_id,
+            "expense": expense_id,
+        }
+        await self._execute_with_retry(
+            self.client.collection("message_expense_links").create, data
+        )
+
+    async def get_expense_by_message_id(
+        self, telegram_message_id: int, chat_id: int
+    ) -> Optional[Expense]:
+        """Get an expense linked to a Telegram message"""
+        await self._ensure_authenticated()
+        try:
+            records = self.client.collection("message_expense_links").get_list(
+                1, 1,
+                {"filter": f'telegram_message_id = {telegram_message_id} && chat_id = {chat_id}'}
+            )
+            if records.items:
+                expense_id = records.items[0].expense
+                return await self.get_expense_by_id(expense_id)
+            return None
+        except ClientResponseError:
+            return None
+
+    async def get_expense_by_id(self, expense_id: str) -> Optional[Expense]:
+        """Get an expense by ID"""
+        await self._ensure_authenticated()
+        try:
+            record = self.client.collection("expenses").get_one(expense_id)
+            return Expense(**record.__dict__)
         except ClientResponseError:
             return None
 

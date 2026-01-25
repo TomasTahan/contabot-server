@@ -24,8 +24,8 @@ class TelegramService:
         text: str,
         parse_mode: str = "HTML",
         reply_to_message_id: Optional[int] = None,
-    ) -> bool:
-        """Send a text message to a chat"""
+    ) -> Optional[dict]:
+        """Send a text message to a chat. Returns the sent message or None on failure."""
         try:
             async with httpx.AsyncClient() as client:
                 data = {
@@ -43,14 +43,17 @@ class TelegramService:
                 )
 
                 if response.status_code == 200:
-                    return True
+                    result = response.json()
+                    if result.get("ok"):
+                        return result.get("result")  # Returns the Message object
+                    return None
                 else:
                     logger.error(f"Failed to send message: {response.text}")
-                    return False
+                    return None
 
         except Exception as e:
             logger.error(f"Error sending message: {e}")
-            return False
+            return None
 
     async def download_file(self, file_id: str) -> Optional[str]:
         """
