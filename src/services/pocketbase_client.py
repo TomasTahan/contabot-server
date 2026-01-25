@@ -1,7 +1,7 @@
 from pocketbase import PocketBase
 from pocketbase.utils import ClientResponseError
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 
 from src.config import get_settings
@@ -20,21 +20,51 @@ class PocketBaseService:
     def __init__(self):
         settings = get_settings()
         self.client = PocketBase(settings.pocketbase_url)
-        self._authenticated = False
         self._admin_email = settings.pocketbase_admin_email
         self._admin_password = settings.pocketbase_admin_password
+        self._auth_timestamp: Optional[datetime] = None
+        # Re-authenticate every 30 minutes to avoid token expiration
+        self._auth_ttl_seconds = 30 * 60
+
+    def _is_auth_valid(self) -> bool:
+        """Check if authentication is still valid based on timestamp."""
+        if self._auth_timestamp is None:
+            return False
+        elapsed = (datetime.now(timezone.utc) - self._auth_timestamp).total_seconds()
+        return elapsed < self._auth_ttl_seconds
+
+    async def _authenticate(self):
+        """Authenticate with PocketBase as superuser."""
+        try:
+            self.client.collection("_superusers").auth_with_password(
+                self._admin_email, self._admin_password
+            )
+            self._auth_timestamp = datetime.now(timezone.utc)
+            logger.info("Authenticated with PocketBase")
+        except ClientResponseError as e:
+            logger.error(f"Failed to authenticate with PocketBase: {e}")
+            self._auth_timestamp = None
+            raise
 
     async def _ensure_authenticated(self):
-        if not self._authenticated:
-            try:
-                self.client.collection("_superusers").auth_with_password(
-                    self._admin_email, self._admin_password
-                )
-                self._authenticated = True
-                logger.info("Authenticated with PocketBase")
-            except ClientResponseError as e:
-                logger.error(f"Failed to authenticate with PocketBase: {e}")
-                raise
+        """Ensure we have a valid authentication token."""
+        if not self._is_auth_valid():
+            await self._authenticate()
+
+    async def _execute_with_retry(self, operation, *args, **kwargs):
+        """Execute an operation with automatic re-authentication on permission errors."""
+        try:
+            await self._ensure_authenticated()
+            return operation(*args, **kwargs)
+        except ClientResponseError as e:
+            # Check if it's a permission/auth error (403 or 401)
+            if e.status in [401, 403]:
+                logger.warning(f"Auth error ({e.status}), re-authenticating...")
+                self._auth_timestamp = None  # Force re-auth
+                await self._authenticate()
+                # Retry the operation
+                return operation(*args, **kwargs)
+            raise
 
     # Properties
     async def get_properties(self) -> list[Property]:
@@ -108,14 +138,15 @@ class PocketBaseService:
     async def create_telegram_user(
         self, telegram_id: str, name: str, username: Optional[str] = None
     ) -> TelegramUser:
-        await self._ensure_authenticated()
         data = {
             "telegram_id": telegram_id,
             "name": name,
             "username": username,
             "active": True,
         }
-        record = self.client.collection("telegram_users").create(data)
+        record = await self._execute_with_retry(
+            self.client.collection("telegram_users").create, data
+        )
         return TelegramUser(**record.__dict__)
 
     async def get_or_create_telegram_user(
@@ -128,8 +159,6 @@ class PocketBaseService:
 
     # Expenses
     async def create_expense(self, expense: ExpenseCreate, attachment_path: Optional[str] = None) -> Expense:
-        await self._ensure_authenticated()
-
         data = {
             "amount": expense.amount,
             "description": expense.description,
@@ -147,13 +176,27 @@ class PocketBaseService:
         data = {k: v for k, v in data.items() if v is not None}
 
         if attachment_path:
-            # Upload file
-            with open(attachment_path, "rb") as f:
-                record = self.client.collection("expenses").create(
-                    data, files={"attachment": f}
-                )
+            # Upload file - need special handling
+            await self._ensure_authenticated()
+            try:
+                with open(attachment_path, "rb") as f:
+                    record = self.client.collection("expenses").create(
+                        data, files={"attachment": f}
+                    )
+            except ClientResponseError as e:
+                if e.status in [401, 403]:
+                    self._auth_timestamp = None
+                    await self._authenticate()
+                    with open(attachment_path, "rb") as f:
+                        record = self.client.collection("expenses").create(
+                            data, files={"attachment": f}
+                        )
+                else:
+                    raise
         else:
-            record = self.client.collection("expenses").create(data)
+            record = await self._execute_with_retry(
+                self.client.collection("expenses").create, data
+            )
 
         return Expense(**record.__dict__)
 
@@ -237,8 +280,9 @@ class PocketBaseService:
     # Debts
     async def create_debt(self, debt_data: dict) -> dict:
         """Create a new debt record"""
-        await self._ensure_authenticated()
-        record = self.client.collection("debts").create(debt_data)
+        record = await self._execute_with_retry(
+            self.client.collection("debts").create, debt_data
+        )
         return record.__dict__
 
     async def get_pending_debts(self, debt_type: str = "all") -> list[dict]:
@@ -294,7 +338,8 @@ class PocketBaseService:
             else:
                 new_status = "partial"
 
-        updated = self.client.collection("debts").update(
+        updated = await self._execute_with_retry(
+            self.client.collection("debts").update,
             debt.id,
             {"paid_amount": new_paid, "status": new_status}
         )
