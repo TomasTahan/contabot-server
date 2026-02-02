@@ -116,7 +116,7 @@ class PocketBaseService:
                 "parent_id": cat.parent,
                 "parent_name": parent_name,
                 "property": cat.property,
-                "keywords": cat.keywords,
+                "keywords": cat.keywords or [],
                 "full_name": f"{parent_name} > {cat.name}" if parent_name else cat.name
             })
 

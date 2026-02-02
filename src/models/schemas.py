@@ -14,7 +14,7 @@ class Category(BaseModel):
     name: str
     parent: Optional[str] = None
     property: Optional[str] = None
-    keywords: list[str] = []
+    keywords: Optional[list[str]] = None
 
 
 class TelegramUser(BaseModel):
