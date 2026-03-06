@@ -624,7 +624,7 @@ class ExpenseAgent:
         # Base options for the agent (without resume)
         self.base_options = {
             "system_prompt": SYSTEM_PROMPT,
-            "model": "claude-sonnet-4-5-20250929",
+            "model": "minimax/minimax-m2.5",
             "mcp_servers": {"expenses": expense_mcp_server},
             "allowed_tools": [
                 "mcp__expenses__register_expense",
